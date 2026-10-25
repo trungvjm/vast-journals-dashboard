@@ -1,0 +1,12 @@
+.DS_Store
+Thumbs.db
+node_modules/
+*.log
+%TEMP%*
+.access-keys.json
+LOCAL-LINKS.md
+src/
+tools/
+evidence/
+data/snapshots/
+data-scopus.json
