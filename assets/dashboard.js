@@ -39,6 +39,7 @@ const state={
   subject:'all',
   sort:'default',
   metric:'citescore',
+  trendStyle:'area',
   fromYear:CHART_START_YEAR,
   toYear:2026,
   selected:new Set(),
@@ -248,6 +249,9 @@ function onScrollUpdate(){
   $('#ruler-track').style.transform=`translateY(${-progress*(2400-vh+48)}px)`;
 
   const detail=Boolean(flightRoute);
+  const chartSection=detail?$('#journal-charts'):$('#trends-panel');
+  const chartBounds=chartSection?.getBoundingClientRect();
+  $('#scroll-flight-layer').classList.toggle('is-reading-charts',Boolean(chartBounds&&chartBounds.top<vh&&chartBounds.bottom>48));
   const hero=$('#hero-wordmark');
   const heroProgress=detail||reducedMotion.matches?0:clamp01(scrollY/380);
   hero.style.transform=`translateY(${-heroProgress*34}px) scale(${1-heroProgress*0.32})`;
@@ -381,9 +385,9 @@ function indexingBadges(j){
   return groupBadge+verified;
 }
 
-function niceScale(maximum){
+function niceScale(maximum,integerTicks=false){
   const target=Math.max(1,maximum*1.12),rough=target/5,power=10**Math.floor(Math.log10(rough));
-  let step=[1,2,2.5,5,10].find(n=>n*power>=rough)*power;
+  const step=Math.max(integerTicks?1:0,[1,2,5,10].find(n=>n*power>=rough)*power);
   return{step,max:Math.ceil(target/step)*step};
 }
 function formatAxisTick(v,decimals){return decimals?oneDec.format(v):integer.format(v);}
@@ -393,6 +397,41 @@ function markerShape(marker,x,y,r,fill,stroke='var(--bg)'){
   if(marker==='diamond')return`<polygon points="${f(x)},${f(y-r-1)} ${f(x+r+1)},${f(y)} ${f(x)},${f(y+r+1)} ${f(x-r-1)},${f(y)}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
   if(marker==='triangle')return`<polygon points="${f(x)},${f(y-r-1.5)} ${f(x+r+1.5)},${f(y+r+1)} ${f(x-r-1.5)},${f(y+r+1)}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
   return`<circle cx="${f(x)}" cy="${f(y)}" r="${f(r)}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
+}
+
+function drawTrendSeries(points,st,baseline,fill=state.trendStyle==='area'){
+  let areas='',lines='',markers='';
+  for(let start=0;start<points.length;){
+    let end=start;
+    while(end+1<points.length&&points[end+1].yr===points[end].yr+1)end++;
+    if(fill&&end>start){
+      const path=points.slice(start,end+1).map(pt=>`${pt.px.toFixed(1)},${pt.py.toFixed(1)}`).join(' ');
+      areas+=`<polygon class="trend-fill" points="${points[start].px.toFixed(1)},${baseline} ${path} ${points[end].px.toFixed(1)},${baseline}" fill="${st.color}" fill-opacity="0.08"/>`;
+    }
+    for(let i=start+1;i<=end;i++){
+      const a=points[i-1],b=points[i],dash=b.isProvisional?'4 4':st.dash;
+      lines+=`<line x1="${a.px.toFixed(1)}" y1="${a.py.toFixed(1)}" x2="${b.px.toFixed(1)}" y2="${b.py.toFixed(1)}" stroke="${st.color}" stroke-width="2.2" stroke-linecap="round" ${dash?`stroke-dasharray="${dash}"`:''}/>`;
+    }
+    const last=points[end];
+    markers+=markerShape(st.marker,last.px,last.py,3.4,last.isProvisional?'var(--chart-surface)':st.color,st.color);
+    start=end+1;
+  }
+  return areas+lines+markers;
+}
+
+function syncTrendStyleControls(){
+  for(const button of document.querySelectorAll('[data-trend-style]')){
+    button.setAttribute('aria-pressed',String(button.dataset.trendStyle===state.trendStyle));
+  }
+}
+
+function renderVisibleCharts(){
+  if(!dashboard)return;
+  if(!$('#home-view').hidden)renderAllCharts();
+  else{
+    const j=dashboard.journals.find(j=>j.id===readHashRoute().split('/')[1]);
+    if(j)renderDetailCharts(j);
+  }
 }
 
 /* ==========================================================================
@@ -730,16 +769,18 @@ function renderChart(){
   const m=metricInfo[state.metric];
   const values=[];
   for(const j of journals)for(const y of years){const v=observation(j,state.metric,y).value;if(Number.isFinite(v))values.push(v);}
-  const scale=niceScale(values.length?Math.max(...values):1);
-  const width=820,height=360,plot={left:56,right:80,top:24,bottom:44};
+  const scale=niceScale(values.length?Math.max(...values):1,m.decimals===0);
+  const width=Math.max(760,Math.round(svg.getBoundingClientRect().width)),height=280,plot={left:56,right:24,top:28,bottom:36};
+  svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
   plot.width=width-plot.left-plot.right;plot.height=height-plot.top-plot.bottom;
   const x=idx=>years.length===1?plot.left+plot.width/2:plot.left+idx*(plot.width/(years.length-1));
   const y=v=>plot.top+plot.height-(v/scale.max)*plot.height;
+  plot.y=y;
 
-  let out=`<title id="chart-title">${esc(m.label)} (${years[0]}–${years.at(-1)})</title><desc id="chart-desc">Biểu đồ đường tương tác theo năm của 7 tạp chí VAST-1.</desc>`;
+  let out=`<title id="chart-title">${esc(m.label)} (${years[0]}–${years.at(-1)})</title><desc id="chart-desc">Biểu đồ ${state.trendStyle==='area'?'miền':'đường'} tương tác theo năm của ${journals.length} tạp chí VAST-1. Năm ${scopus.trackerYear} là số liệu Tracker, chưa đủ năm.</desc>`;
   if(years.includes(scopus.trackerYear)&&years.length>1){
     const idx=years.indexOf(scopus.trackerYear),leftX=x(idx)-(x(idx)-x(idx-1))/2;
-    out+=`<rect x="${leftX.toFixed(1)}" y="${plot.top}" width="${(plot.left+plot.width-leftX).toFixed(1)}" height="${plot.height}" fill="var(--bg-sunken)" opacity="0.65"/><text x="${(leftX+6).toFixed(1)}" y="${plot.top+14}" fill="var(--muted)" font-size="10.5">Tracker ${scopus.trackerYear}</text>`;
+    out+=`<rect x="${leftX.toFixed(1)}" y="${plot.top}" width="${(plot.left+plot.width-leftX).toFixed(1)}" height="${plot.height}" fill="var(--chart-period)"/><text x="${plot.left+plot.width}" y="${plot.top-10}" text-anchor="end" fill="var(--muted)" font-size="12">Tracker ${scopus.trackerYear}</text>`;
   }
   for(let tick=0;tick<=scale.max+scale.step/2;tick+=scale.step){
     const py=y(tick);
@@ -751,7 +792,6 @@ function renderChart(){
     out+=`<text x="${px.toFixed(1)}" y="${height-14}" text-anchor="middle" fill="var(--muted)" font-size="11.5">${yr===scopus.trackerYear?yr+'*':yr}</text>`;
   });
 
-  const endLabels=[];
   for(const j of journals){
     const st=styles[j.id],pts=[];
     years.forEach((yr,idx)=>{
@@ -759,29 +799,10 @@ function renderChart(){
       if(Number.isFinite(obs.value))pts.push({yr,px:x(idx),py:y(obs.value),...obs});
     });
     if(!pts.length)continue;
-    let group=`<g class="journal-series" data-id="${esc(j.id)}">`;
-    for(let i=1;i<pts.length;i++){
-      const a=pts[i-1],b=pts[i];
-      if(years.indexOf(b.yr)-years.indexOf(a.yr)!==1)continue;
-      const dash=b.isProvisional?'4 4':st.dash;
-      group+=`<line x1="${a.px.toFixed(1)}" y1="${a.py.toFixed(1)}" x2="${b.px.toFixed(1)}" y2="${b.py.toFixed(1)}" stroke="${st.color}" stroke-width="2.4" ${dash?`stroke-dasharray="${dash}"`:''}/>`;
-    }
-    for(const pt of pts){
-      group+=markerShape(st.marker,pt.px,pt.py,pt.isProvisional?4.2:3.5,pt.isProvisional?'var(--bg)':st.color,st.color);
-    }
-    group+='</g>';
-    out+=group;
-    const last=pts.at(-1);
-    endLabels.push({code:j.code,color:st.color,y:last.py,text:`${j.code} ${formatValue(last.value)}`});
+    out+=`<g class="journal-series" data-id="${esc(j.id)}">${drawTrendSeries(pts,st,y(0))}</g>`;
   }
-  endLabels.sort((a,b)=>a.y-b.y);
-  for(let i=1;i<endLabels.length;i++)if(endLabels[i].y-endLabels[i-1].y<14)endLabels[i].y=endLabels[i-1].y+14;
-  if(endLabels.length){endLabels.at(-1).y=Math.min(plot.top+plot.height,endLabels.at(-1).y);for(let i=endLabels.length-2;i>=0;i--)endLabels[i].y=Math.min(endLabels[i].y,endLabels[i+1].y-14);}
-  for(const l of endLabels){
-    const py=Math.min(plot.top+plot.height,Math.max(plot.top+8,l.y));
-    out+=`<text x="${plot.left+plot.width+8}" y="${(py+4).toFixed(1)}" fill="${l.color}" font-size="11" font-weight="600">${esc(l.text)}</text>`;
-  }
-  out+=`<line id="hover-line" x1="0" y1="${plot.top}" x2="0" y2="${plot.top+plot.height}" stroke="var(--ink)" stroke-dasharray="3 3" hidden/><rect id="chart-hitbox" x="${plot.left}" y="${plot.top}" width="${plot.width}" height="${plot.height}" fill="transparent"/>`;
+  if(!values.length)out+=`<text x="${plot.left+plot.width/2}" y="${plot.top+plot.height/2}" text-anchor="middle" fill="var(--muted)" font-size="13">Chưa có chỉ số trong khoảng năm đã chọn.</text>`;
+  out+=`<line id="hover-line" x1="0" y1="${plot.top}" x2="0" y2="${plot.top+plot.height}" stroke="var(--muted)" stroke-dasharray="3 3" hidden/><g id="hover-points"></g><rect id="chart-hitbox" x="${plot.left}" y="${plot.top}" width="${plot.width}" height="${plot.height}" fill="transparent"/>`;
   svg.innerHTML=out;
   $('#trend-caption').textContent=`* Tracker 2026 (${formatDate(dashboard.officialScopus.trackerSourceUpdatedAt)}).`;
   bindChartEvents(svg,years,x,plot);
@@ -793,7 +814,7 @@ function renderChart(){
 function bindChartEvents(svg,years,x,plot){
   const idxFromEvent=e=>{
     const r=svg.getBoundingClientRect();
-    const px=((e.clientX-r.left)/r.width)*820;
+    const px=((e.clientX-r.left)/r.width)*svg.viewBox.baseVal.width;
     return Math.round(Math.max(0,Math.min(1,(px-plot.left)/Math.max(1,plot.width)))*(years.length-1));
   };
   svg.onpointermove=e=>{
@@ -826,6 +847,7 @@ function showYearTooltip(year,years,x,plot,clientX){
   if(line){line.setAttribute('x1',px.toFixed(1));line.setAttribute('x2',px.toFixed(1));line.hidden=false;}
   $('#tooltip-year').textContent=year===scopus.trackerYear?`Năm ${year} (Tracker)`:`Năm ${year}`;
   const rows=scopusJournals().filter(j=>state.selected.has(j.id)).map(j=>({j,obs:observation(j,state.metric,year)})).sort((a,b)=>(b.obs.value??-1)-(a.obs.value??-1));
+  $('#hover-points').innerHTML=rows.filter(({obs})=>Number.isFinite(obs.value)).map(({j,obs})=>markerShape(styles[j.id].marker,px,plot.y(obs.value),4.2,styles[j.id].color,'var(--chart-surface)')).join('');
   $('#tooltip-values').innerHTML=rows.map(({j,obs})=>{
     const st=styles[j.id];
     const ratio=obs.record&&Number.isFinite(obs.record.citations)&&Number.isFinite(obs.record.documents)?` (${integer.format(obs.record.citations)}/${integer.format(obs.record.documents)})`:'';
@@ -835,13 +857,14 @@ function showYearTooltip(year,years,x,plot,clientX){
   const pinned=state.pinnedYear===year;
   tip.hidden=false;tip.style.pointerEvents=pinned?'auto':'none';$('#close-tooltip').hidden=!pinned;
   const area=svg.closest('.chart-area').getBoundingClientRect(),svgRect=svg.getBoundingClientRect();
-  const anchor=Number.isFinite(clientX)?clientX-area.left:(svgRect.left-area.left)+(px/820)*svgRect.width;
+  const anchor=Number.isFinite(clientX)?clientX-area.left:(svgRect.left-area.left)+(px/svg.viewBox.baseVal.width)*svgRect.width;
   const left=anchor+tip.offsetWidth+28<=area.width?anchor+16:anchor-tip.offsetWidth-16;
   tip.style.left=`${Math.max(12,Math.min(area.width-tip.offsetWidth-12,left))}px`;
 }
 
 function hideTooltip(){
   const line=$('#hover-line');if(line)line.hidden=true;
+  const points=$('#hover-points');if(points)points.innerHTML='';
   const tip=$('#chart-tooltip');if(tip)tip.hidden=true;
 }
 
@@ -856,14 +879,15 @@ function renderCandidatesSection(){
   const vals=[0.8];
   for(const j of active)for(const r of j.localCitation?.selfCalculatedSeries||[]){if(r.year<CHART_START_YEAR)continue;const s=r.score??r.value;if(Number.isFinite(s))vals.push(s);}
   const scale=niceScale(Math.max(...vals));
-  const width=820,height=350,plot={left:56,right:84,top:24,bottom:42};
+  const width=Math.max(760,Math.round(svg.getBoundingClientRect().width)),height=280,plot={left:56,right:24,top:28,bottom:36};
+  svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
   plot.width=width-plot.left-plot.right;plot.height=height-plot.top-plot.bottom;
   const x=idx=>plot.left+idx*(plot.width/(years.length-1));
   const y=v=>plot.top+plot.height-(v/scale.max)*plot.height;
 
   let out='';
   const x25=x(years.indexOf(2025)),x26=x(years.indexOf(2026)),splitX=(x25+x26)/2;
-  out+=`<rect x="${splitX.toFixed(1)}" y="${plot.top}" width="${(plot.left+plot.width-splitX).toFixed(1)}" height="${plot.height}" fill="var(--bg-sunken)" opacity="0.65"/><text x="${(splitX+5).toFixed(1)}" y="${plot.top+14}" fill="var(--muted)" font-size="10">2026 YTD</text>`;
+  out+=`<rect x="${splitX.toFixed(1)}" y="${plot.top}" width="${(plot.left+plot.width-splitX).toFixed(1)}" height="${plot.height}" fill="var(--chart-period)"/><text x="${plot.left+plot.width}" y="${plot.top-10}" text-anchor="end" fill="var(--muted)" font-size="12">2026 YTD</text>`;
 
   for(let tick=0;tick<=scale.max+scale.step/2;tick+=scale.step){
     const py=y(tick);
@@ -881,38 +905,18 @@ function renderCandidatesSection(){
     }
   }
 
-  const endLabels=[];
   for(const j of active){
     const st=styles[j.id],pts=[];
     years.forEach((yr,idx)=>{
       const rec=localScore(j,yr);
-      if(rec&&Number.isFinite(rec.score))pts.push({yr,px:x(idx),py:y(rec.score),rec});
+      if(rec&&Number.isFinite(rec.score))pts.push({yr,px:x(idx),py:y(rec.score),isProvisional:yr===2026});
     });
     if(!pts.length)continue;
-    let g=`<g class="journal-series" data-id="${esc(j.id)}">`;
-    for(let i=1;i<pts.length;i++){
-      const a=pts[i-1],b=pts[i];
-      const dash=b.yr===2026?'4 4':st.dash;
-      g+=`<line x1="${a.px.toFixed(1)}" y1="${a.py.toFixed(1)}" x2="${b.px.toFixed(1)}" y2="${b.py.toFixed(1)}" stroke="${st.color}" stroke-width="2.4" ${dash?`stroke-dasharray="${dash}"`:''}/>`;
-    }
-    for(const pt of pts){
-      g+=markerShape(st.marker,pt.px,pt.py,pt.yr===2026?4.1:3.4,pt.yr===2026?'var(--bg)':st.color,st.color);
-    }
-    g+='</g>';
-    out+=g;
-    const last=pts.at(-1);
-    endLabels.push({code:j.code,color:st.color,y:last.py,text:`${j.code} ${twoDec.format(last.rec.score)}`});
+    out+=`<g class="journal-series" data-id="${esc(j.id)}">${drawTrendSeries(pts,st,y(0))}</g>`;
   }
-  endLabels.sort((a,b)=>a.y-b.y);
-  for(let i=1;i<endLabels.length;i++)if(endLabels[i].y-endLabels[i-1].y<14)endLabels[i].y=endLabels[i-1].y+14;
-  if(endLabels.length){endLabels.at(-1).y=Math.min(plot.top+plot.height,endLabels.at(-1).y);for(let i=endLabels.length-2;i>=0;i--)endLabels[i].y=Math.min(endLabels[i].y,endLabels[i+1].y-14);}
-  for(const l of endLabels){
-    const py=Math.min(plot.top+plot.height,Math.max(plot.top+8,l.y));
-    out+=`<text x="${plot.left+plot.width+8}" y="${(py+4).toFixed(1)}" fill="${l.color}" font-size="11" font-weight="600">${esc(l.text)}</text>`;
-  }
-  out+=`<line id="candidates-hover-line" x1="0" y1="${plot.top}" x2="0" y2="${plot.top+plot.height}" stroke="var(--ink)" stroke-dasharray="3 3" hidden/><rect x="${plot.left}" y="${plot.top}" width="${plot.width}" height="${plot.height}" fill="transparent"/>`;
+  out+=`<line id="candidates-hover-line" x1="0" y1="${plot.top}" x2="0" y2="${plot.top+plot.height}" stroke="var(--muted)" stroke-dasharray="3 3" hidden/><g id="candidates-hover-points"></g><rect x="${plot.left}" y="${plot.top}" width="${plot.width}" height="${plot.height}" fill="transparent"/>`;
   svg.innerHTML=out;
-  $('#candidates-tooltip').hidden=true;$('#candidates-hover-line').hidden=true;
+  $('#candidates-tooltip').hidden=true;$('#candidates-hover-line').hidden=true;$('#candidates-hover-points').innerHTML='';
 
   let pinnedIndex=null,activeIndex=0;
   const tip=$('#candidates-tooltip');
@@ -923,20 +927,21 @@ function renderCandidatesSection(){
     if(ln){ln.setAttribute('x1',px.toFixed(1));ln.setAttribute('x2',px.toFixed(1));ln.hidden=false;}
     $('#candidates-tooltip-year').textContent=`Năm ${yr} (${yr-3}–${yr})`;
     const rows=active.map(j=>({j,rec:localScore(j,yr)})).sort((a,b)=>(b.rec?.score??-1)-(a.rec?.score??-1));
+    $('#candidates-hover-points').innerHTML=rows.filter(({rec})=>Number.isFinite(rec?.score)).map(({j,rec})=>markerShape(styles[j.id].marker,px,y(rec.score),4.2,styles[j.id].color,'var(--chart-surface)')).join('');
     $('#candidates-tooltip-values').innerHTML=rows.map(({j,rec})=>{
       const st=styles[j.id],txt=rec?`${twoDec.format(rec.score)} (${integer.format(rec.numerator)}/${integer.format(rec.denominator)})`:'N/A';
       return`<div class="tooltip-row"><dt><span class="tooltip-dot" style="background:${st.color}"></span>${esc(j.code)}</dt><dd>${esc(txt)}</dd></div>`;
     }).join('');
     tip.hidden=false;tip.style.pointerEvents=pinnedIndex===idx?'auto':'none';$('#close-candidates-tooltip').hidden=pinnedIndex!==idx;
     const area=svg.closest('.chart-area').getBoundingClientRect(),svgRect=svg.getBoundingClientRect();
-    const anchor=Number.isFinite(clientX)?clientX-area.left:(svgRect.left-area.left)+(px/820)*svgRect.width;
+    const anchor=Number.isFinite(clientX)?clientX-area.left:(svgRect.left-area.left)+(px/width)*svgRect.width;
     const left=anchor+tip.offsetWidth+28<=area.width?anchor+16:anchor-tip.offsetWidth-16;
     tip.style.left=`${Math.max(12,Math.min(area.width-tip.offsetWidth-12,left))}px`;
   };
-  const indexFromEvent=e=>{const r=svg.getBoundingClientRect(),px=((e.clientX-r.left)/r.width)*820;return Math.round(Math.max(0,Math.min(1,(px-plot.left)/plot.width))*(years.length-1));};
-  const clear=()=>{pinnedIndex=null;tip.hidden=true;$('#candidates-hover-line').hidden=true;};
+  const indexFromEvent=e=>{const r=svg.getBoundingClientRect(),px=((e.clientX-r.left)/r.width)*width;return Math.round(Math.max(0,Math.min(1,(px-plot.left)/plot.width))*(years.length-1));};
+  const clear=()=>{pinnedIndex=null;tip.hidden=true;$('#candidates-hover-line').hidden=true;$('#candidates-hover-points').innerHTML='';};
   svg.onpointermove=e=>{if(pinnedIndex!==null)return;const idx=indexFromEvent(e);if(idx===activeIndex&&!tip.hidden)return;showYr(years[idx],e.clientX);};
-  svg.onpointerleave=()=>{if(pinnedIndex===null){tip.hidden=true;$('#candidates-hover-line').hidden=true;}};
+  svg.onpointerleave=()=>{if(pinnedIndex===null)clear();};
   svg.onclick=e=>{const idx=indexFromEvent(e);if(pinnedIndex===idx){clear();return;}pinnedIndex=idx;showYr(years[idx],e.clientX);};
   svg.onkeydown=e=>{if(e.key==='Escape'){clear();return;}const idx=e.key==='ArrowLeft'?Math.max(0,activeIndex-1):e.key==='ArrowRight'?Math.min(years.length-1,activeIndex+1):e.key==='Home'?0:e.key==='End'?years.length-1:null;if(idx===null)return;e.preventDefault();pinnedIndex=idx;showYr(years[idx]);};
   $('#close-candidates-tooltip').onclick=clear;
@@ -968,8 +973,9 @@ function renderCitationsSection(){
   };
   const vals=[];
   for(const j of active)for(const yr of years){const v=getVal(j,yr);if(Number.isFinite(v))vals.push(v);}
-  const scale=niceScale(vals.length?Math.max(...vals):10);
-  const width=820,height=350,plot={left:60,right:88,top:24,bottom:42};
+  const scale=niceScale(vals.length?Math.max(...vals):10,true);
+  const width=Math.max(760,Math.round(svg.getBoundingClientRect().width)),height=280,plot={left:60,right:24,top:28,bottom:36};
+  svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
   plot.width=width-plot.left-plot.right;plot.height=height-plot.top-plot.bottom;
   const x=idx=>plot.left+idx*(plot.width/(years.length-1));
   const y=v=>plot.top+plot.height-(v/scale.max)*plot.height;
@@ -984,42 +990,19 @@ function renderCitationsSection(){
     out+=`<text x="${x(idx).toFixed(1)}" y="${height-14}" text-anchor="middle" fill="var(--muted)" font-size="11.5">${yr===2026?'2026*':yr}</text>`;
   });
 
-  const endLabels=[];
   for(const j of active){
     const st=styles[j.id],pts=[];
     years.forEach((yr,idx)=>{
       const v=getVal(j,yr);
-      if(Number.isFinite(v))pts.push({yr,px:x(idx),py:y(v),v});
+      if(Number.isFinite(v))pts.push({yr,px:x(idx),py:y(v),isProvisional:yr===2026});
     });
     if(!pts.length)continue;
-    let g=`<g class="journal-series" data-id="${esc(j.id)}">`;
-    for(let i=1;i<pts.length;i++){
-      const a=pts[i-1],b=pts[i];
-      if(years.indexOf(b.yr)-years.indexOf(a.yr)!==1)continue;
-      const dash=b.yr===2026?'4 4':st.dash;
-      g+=`<line x1="${a.px.toFixed(1)}" y1="${a.py.toFixed(1)}" x2="${b.px.toFixed(1)}" y2="${b.py.toFixed(1)}" stroke="${st.color}" stroke-width="2.3" ${dash?`stroke-dasharray="${dash}"`:''}/>`;
-    }
-    for(const pt of pts){
-      g+=markerShape(st.marker,pt.px,pt.py,3.3,pt.yr===2026?'var(--bg)':st.color,st.color);
-    }
-    g+='</g>';
-    out+=g;
-    const last=pts.at(-1);
-    endLabels.push({code:j.code,color:st.color,y:last.py,text:`${j.code} ${integer.format(last.v)}`});
+    out+=`<g class="journal-series" data-id="${esc(j.id)}">${drawTrendSeries(pts,st,y(0))}</g>`;
   }
-  endLabels.sort((a,b)=>a.y-b.y);
-  for(let i=1;i<endLabels.length;i++)if(endLabels[i].y-endLabels[i-1].y<14)endLabels[i].y=endLabels[i-1].y+14;
-  if(endLabels.length){
-    endLabels.at(-1).y=Math.min(plot.top+plot.height,endLabels.at(-1).y);
-    for(let i=endLabels.length-2;i>=0;i--)endLabels[i].y=Math.min(endLabels[i].y,endLabels[i+1].y-14);
-  }
-  for(const l of endLabels){
-    const py=Math.min(plot.top+plot.height,Math.max(plot.top+8,l.y));
-    out+=`<text x="${plot.left+plot.width+8}" y="${(py+4).toFixed(1)}" fill="${l.color}" font-size="11" font-weight="600">${esc(l.text)}</text>`;
-  }
-  out+=`<line id="citations-hover-line" x1="0" y1="${plot.top}" x2="0" y2="${plot.top+plot.height}" stroke="var(--ink)" stroke-dasharray="3 3" hidden/><rect x="${plot.left}" y="${plot.top}" width="${plot.width}" height="${plot.height}" fill="transparent"/>`;
+  if(!active.length)out+=`<text x="${plot.left+plot.width/2}" y="${plot.top+plot.height/2}" text-anchor="middle" fill="var(--muted)" font-size="13">Không có dữ liệu cho nhóm và chỉ số đã chọn.</text>`;
+  out+=`<line id="citations-hover-line" x1="0" y1="${plot.top}" x2="0" y2="${plot.top+plot.height}" stroke="var(--muted)" stroke-dasharray="3 3" hidden/><g id="citations-hover-points"></g><rect x="${plot.left}" y="${plot.top}" width="${plot.width}" height="${plot.height}" fill="transparent"/>`;
   svg.innerHTML=out;
-  $('#citations-tooltip').hidden=true;$('#citations-hover-line').hidden=true;
+  $('#citations-tooltip').hidden=true;$('#citations-hover-line').hidden=true;$('#citations-hover-points').innerHTML='';
 
   let modeLabel='';
   if(state.citationMode==='scopus-cited-by'){
@@ -1041,17 +1024,18 @@ function renderCitationsSection(){
     if(ln){ln.setAttribute('x1',px.toFixed(1));ln.setAttribute('x2',px.toFixed(1));ln.hidden=false;}
     $('#citations-tooltip-year').textContent=`Năm ${yr}`;
     const rows=active.map(j=>({j,v:getVal(j,yr)})).sort((a,b)=>(b.v??-1)-(a.v??-1));
+    $('#citations-hover-points').innerHTML=rows.filter(({v})=>Number.isFinite(v)).map(({j,v})=>markerShape(styles[j.id].marker,px,y(v),4.2,styles[j.id].color,'var(--chart-surface)')).join('');
     $('#citations-tooltip-values').innerHTML=rows.map(({j,v})=>`<div class="tooltip-row"><dt><span class="tooltip-dot" style="background:${styles[j.id]?.color}"></span>${esc(j.code)}</dt><dd>${Number.isFinite(v)?integer.format(v):'N/A'}</dd></div>`).join('');
     tip.hidden=false;tip.style.pointerEvents=pinnedIndex===idx?'auto':'none';$('#close-citations-tooltip').hidden=pinnedIndex!==idx;
     const area=svg.closest('.chart-area').getBoundingClientRect(),svgRect=svg.getBoundingClientRect();
-    const anchor=Number.isFinite(clientX)?clientX-area.left:(svgRect.left-area.left)+(px/820)*svgRect.width;
+    const anchor=Number.isFinite(clientX)?clientX-area.left:(svgRect.left-area.left)+(px/width)*svgRect.width;
     const left=anchor+tip.offsetWidth+28<=area.width?anchor+16:anchor-tip.offsetWidth-16;
     tip.style.left=`${Math.max(12,Math.min(area.width-tip.offsetWidth-12,left))}px`;
   };
-  const indexFromEvent=e=>{const r=svg.getBoundingClientRect(),px=((e.clientX-r.left)/r.width)*820;return Math.round(Math.max(0,Math.min(1,(px-plot.left)/plot.width))*(years.length-1));};
-  const clear=()=>{pinnedIndex=null;tip.hidden=true;$('#citations-hover-line').hidden=true;};
+  const indexFromEvent=e=>{const r=svg.getBoundingClientRect(),px=((e.clientX-r.left)/r.width)*width;return Math.round(Math.max(0,Math.min(1,(px-plot.left)/plot.width))*(years.length-1));};
+  const clear=()=>{pinnedIndex=null;tip.hidden=true;$('#citations-hover-line').hidden=true;$('#citations-hover-points').innerHTML='';};
   svg.onpointermove=e=>{if(pinnedIndex!==null)return;const idx=indexFromEvent(e);if(idx===activeIndex&&!tip.hidden)return;showCitation(idx,e.clientX);};
-  svg.onpointerleave=()=>{if(pinnedIndex===null){tip.hidden=true;$('#citations-hover-line').hidden=true;}};
+  svg.onpointerleave=()=>{if(pinnedIndex===null)clear();};
   svg.onclick=e=>{const idx=indexFromEvent(e);if(pinnedIndex===idx){clear();return;}pinnedIndex=idx;showCitation(idx,e.clientX);};
   svg.onkeydown=e=>{if(e.key==='Escape'){clear();return;}const idx=e.key==='ArrowLeft'?Math.max(0,activeIndex-1):e.key==='ArrowRight'?Math.min(years.length-1,activeIndex+1):e.key==='Home'?0:e.key==='End'?years.length-1:null;if(idx===null)return;e.preventDefault();pinnedIndex=idx;showCitation(idx);};
   $('#close-citations-tooltip').onclick=clear;
@@ -1082,8 +1066,9 @@ function renderPapersSection(){
     const rows=journals.map(j=>({j,papers:historyRecord(j,yr)?.papers,issues:historyRecord(j,yr)?.issues}));
     return{yr,totalPapers:rows.reduce((s,r)=>s+(Number.isFinite(r.papers)?r.papers:0),0),rows};
   });
-  const scale=niceScale(Math.max(50,...yearTotals.map(t=>t.totalPapers)));
-  const width=820,height=350,plot={left:60,right:40,top:28,bottom:44};
+  const scale=niceScale(Math.max(50,...yearTotals.map(t=>t.totalPapers)),true);
+  const width=Math.max(760,Math.round(svg.getBoundingClientRect().width)),height=280,plot={left:60,right:24,top:28,bottom:36};
+  svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
   plot.width=width-plot.left-plot.right;plot.height=height-plot.top-plot.bottom;
   const slot=plot.width/years.length,barW=Math.min(58,slot*0.56);
   const xCenter=idx=>plot.left+(idx+0.5)*slot;
@@ -1152,6 +1137,7 @@ function renderPapersSection(){
 
 function renderAllCharts(){
   if(!dashboard)return;
+  syncTrendStyleControls();
   renderLegend();
   renderChart();
   renderCandidatesSection();
@@ -1355,26 +1341,32 @@ function renderDetail(id){
             <select id="detail-to-year">${yearOptions}</select>
           </div>
           <button id="detail-reset-years" class="text-button" type="button">Toàn bộ (${minYear}–${maxYear})</button>
+          <div class="chart-style-switch" role="group" aria-label="Dạng biểu đồ xu hướng">
+            <button type="button" data-trend-style="line" aria-pressed="false">Đường</button>
+            <button type="button" data-trend-style="area" aria-pressed="true">Miền</button>
+          </div>
         </form>
       </div>
 
       <div class="detail-charts-grid">
         <div class="detail-chart-card">
-          <h4>1. Bài và kỳ xuất bản</h4>
+          <h4>Bài và kỳ xuất bản</h4>
           <p id="j-pub-summary"></p>
           <div class="detail-svg-scroll"><svg id="j-pub-chart" class="detail-svg" viewBox="0 0 860 270" role="img" aria-label="Biểu đồ lịch sử xuất bản của ${esc(j.code)}"></svg></div>
         </div>
         <div class="detail-chart-card">
-          <h4>2. ${j.scopusCitedBy?'Tài liệu trích dẫn theo năm (Scopus)':'Trích dẫn theo năm'}</h4>
+          <h4>${j.scopusCitedBy?'Tài liệu trích dẫn theo năm (Scopus)':'Trích dẫn theo năm'}</h4>
+          ${j.scopusCitedBy?'':`<div class="detail-series-key"><span><i class="citation-key" aria-hidden="true"></i>Lượt trích dẫn</span><span><i class="is-dashed" aria-hidden="true"></i>Bài báo trích dẫn</span></div>`}
           <p id="j-cit-summary"></p>
           <div class="detail-svg-scroll"><svg id="j-cit-chart" class="detail-svg" viewBox="0 0 860 260" role="img" aria-label="Biểu đồ lịch sử trích dẫn của ${esc(j.code)}"></svg></div>
         </div>
         <div class="detail-chart-card">
-          <h4>3. ${j.group==='VAST-1'?'CiteScore &amp; Tracker (Scopus)':'CiteScore tự tính'}</h4>
+          <h4>${j.group==='VAST-1'?'CiteScore &amp; Tracker (Scopus)':'CiteScore tự tính'}</h4>
           <p id="j-cs-summary"></p>
           <div class="detail-svg-scroll"><svg id="j-cs-chart" class="detail-svg" viewBox="0 0 860 250" role="img" aria-label="Biểu đồ CiteScore của ${esc(j.code)}"></svg></div>
         </div>
       </div>
+      <p class="chart-caption">* Số liệu năm 2026 chưa đủ năm; CiteScore 2026 là ${j.group==='VAST-1'?'Tracker của Scopus':'chỉ số tự tính'}.</p>
     </section>
 
     <div id="journal-data" class="detail-data-section">
@@ -1542,7 +1534,9 @@ function renderDetail(id){
 }
 
 function renderDetailCharts(j){
+  syncTrendStyleControls();
   const color=styles[j.id]?.color||'#2d81ff';
+  $('#journal-charts').style.setProperty('--detail-chart-color',color);
   const allHist=statisticalHistory(j);
   const a=Math.max(statisticalStartYear(j),state.detailFromYear??allHist[0]?.year??2020);
   const b=state.detailToYear??allHist.at(-1)?.year??2026;
@@ -1553,8 +1547,9 @@ function renderDetailCharts(j){
   const pubSvg=$('#j-pub-chart');
   if(pubSvg){
     const maxP=Math.max(10,...hist.map(r=>r.papers||0));
-    const scale=niceScale(maxP);
-    const W=860,H=270,p={left:52,right:28,top:24,bottom:38};
+    const scale=niceScale(maxP,true);
+    const W=Math.max(700,Math.round(pubSvg.getBoundingClientRect().width)),H=260,p={left:56,right:24,top:28,bottom:36};
+    pubSvg.setAttribute('viewBox',`0 0 ${W} ${H}`);
     p.w=W-p.left-p.right;p.h=H-p.top-p.bottom;
     const slot=p.w/hist.length,barW=Math.max(4,Math.min(34,slot*0.66));
     const xC=i=>p.left+(i+0.5)*slot;
@@ -1566,17 +1561,14 @@ function renderDetailCharts(j){
       out+=`<line x1="${p.left}" y1="${py.toFixed(1)}" x2="${p.left+p.w}" y2="${py.toFixed(1)}" stroke="var(--line)"/><text x="${p.left-8}" y="${(py+4).toFixed(1)}" text-anchor="end" fill="var(--muted)" font-size="11">${integer.format(tick)}</text>`;
     }
     const labelEvery=hist.length>30?5:(hist.length>16?2:1);
-    const polyPts=hist.map((r,i)=>`${xC(i).toFixed(1)},${y(r.papers||0).toFixed(1)}`).join(' ');
-    const areaPts=`${xC(0).toFixed(1)},${(p.top+p.h).toFixed(1)} ${polyPts} ${xC(hist.length-1).toFixed(1)},${(p.top+p.h).toFixed(1)}`;
-    out+=`<polygon points="${areaPts}" fill="${color}" opacity="0.10"/>`;
     hist.forEach((r,i)=>{
-      const cx=xC(i),bx=cx-barW/2,py=y(r.papers||0),bh=p.top+p.h-py;
-      out+=`<rect x="${bx.toFixed(1)}" y="${py.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1.5,bh).toFixed(1)}" rx="1.5" fill="${color}" opacity="${r.year===2026?'0.62':'0.88'}"/>`;
+      const cx=xC(i),bx=cx-barW/2,py=y(r.papers),bh=p.top+p.h-py;
+      if(Number.isFinite(r.papers))out+=`<rect x="${bx.toFixed(1)}" y="${py.toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="${color}" opacity="${r.year===2026?'0.55':'0.88'}"/>`;
       if(hist.length<=20&&(r.papers||0)>0){
         out+=`<text x="${cx.toFixed(1)}" y="${(py-5).toFixed(1)}" text-anchor="middle" fill="var(--ink-strong)" font-size="10" font-weight="600">${r.papers}</text>`;
       }
       if(i%labelEvery===0||i===hist.length-1){
-        out+=`<text x="${cx.toFixed(1)}" y="${H-12}" text-anchor="middle" fill="var(--muted)" font-size="10.5">${r.year}</text>`;
+        out+=`<text x="${cx.toFixed(1)}" y="${H-12}" text-anchor="middle" fill="var(--muted)" font-size="12">${r.year}${r.year===2026?'*':''}</text>`;
       }
     });
     pubSvg.innerHTML=out;
@@ -1593,10 +1585,11 @@ function renderDetailCharts(j){
   if(citSvg){
     const series=hist;
     const maxC=Math.max(10,...series.map(r=>Math.max(r.citationEdges||0,r.citingDocs||0)));
-    const scale=niceScale(maxC);
-    const W=860,H=260,p={left:52,right:28,top:22,bottom:36};
+    const scale=niceScale(maxC,true);
+    const W=Math.max(700,Math.round(citSvg.getBoundingClientRect().width)),H=260,p={left:56,right:24,top:28,bottom:36};
+    citSvg.setAttribute('viewBox',`0 0 ${W} ${H}`);
     p.w=W-p.left-p.right;p.h=H-p.top-p.bottom;
-    const x=i=>series.length===1?p.left+p.w/2:p.left+i*(p.w/(series.length-1));
+    const x=i=>a===b?p.left+p.w/2:p.left+(series[i].year-a)*(p.w/(b-a));
     const y=v=>p.top+p.h-((v||0)/scale.max)*p.h;
 
     let out='';
@@ -1605,37 +1598,22 @@ function renderDetailCharts(j){
       out+=`<line x1="${p.left}" y1="${py.toFixed(1)}" x2="${p.left+p.w}" y2="${py.toFixed(1)}" stroke="var(--line)"/><text x="${p.left-8}" y="${(py+4).toFixed(1)}" text-anchor="end" fill="var(--muted)" font-size="11">${integer.format(tick)}</text>`;
     }
     const labelEvery=series.length>28?5:(series.length>14?2:1);
-    const edgePts=series.map((r,i)=>({i,r,px:x(i),py:y(r.citationEdges||0)})).filter(pt=>Number.isFinite(pt.r.citationEdges));
-    const docPts=series.map((r,i)=>({i,r,px:x(i),py:y(r.citingDocs||0)})).filter(pt=>Number.isFinite(pt.r.citingDocs));
-
-    if(edgePts.length>1){
-      const poly=edgePts.map(pt=>`${pt.px.toFixed(1)},${pt.py.toFixed(1)}`).join(' ');
-      const area=`${edgePts[0].px.toFixed(1)},${(p.top+p.h).toFixed(1)} ${poly} ${edgePts.at(-1).px.toFixed(1)},${(p.top+p.h).toFixed(1)}`;
-      out+=`<polygon points="${area}" fill="${color}" opacity="0.14"/><polyline points="${poly}" fill="none" stroke="${color}" stroke-width="2.5"/>`;
-    }else if(docPts.length>1&&j.scopusCitedBy){
-      const poly2=docPts.map(pt=>`${pt.px.toFixed(1)},${pt.py.toFixed(1)}`).join(' ');
-      const area=`${docPts[0].px.toFixed(1)},${(p.top+p.h).toFixed(1)} ${poly2} ${docPts.at(-1).px.toFixed(1)},${(p.top+p.h).toFixed(1)}`;
-      out+=`<polygon points="${area}" fill="${color}" opacity="0.14"/><polyline points="${poly2}" fill="none" stroke="${color}" stroke-width="2.5"/>`;
-    }
-    if(docPts.length>1&&!j.scopusCitedBy){
-      const poly2=docPts.map(pt=>`${pt.px.toFixed(1)},${pt.py.toFixed(1)}`).join(' ');
-      out+=`<polyline points="${poly2}" fill="none" stroke="var(--ink)" stroke-width="1.8" stroke-dasharray="4 3"/>`;
-    }
-    const markerPts=edgePts.length?edgePts:docPts;
-    for(const pt of markerPts){
-      out+=`<circle cx="${pt.px.toFixed(1)}" cy="${pt.py.toFixed(1)}" r="3.3" fill="${color}" stroke="var(--bg)" stroke-width="1.3"/>`;
-    }
+    const edgePts=series.filter(r=>Number.isFinite(r.citationEdges)).map(r=>({yr:r.year,px:a===b?p.left+p.w/2:p.left+(r.year-a)*p.w/(b-a),py:y(r.citationEdges),isProvisional:r.year===2026}));
+    const docPts=series.filter(r=>Number.isFinite(r.citingDocs)).map(r=>({yr:r.year,px:a===b?p.left+p.w/2:p.left+(r.year-a)*p.w/(b-a),py:y(r.citingDocs),isProvisional:r.year===2026}));
+    const markerPts=j.scopusCitedBy?docPts:edgePts;
+    out+=drawTrendSeries(markerPts,{color,marker:'circle',dash:''},y(0));
+    if(!j.scopusCitedBy)out+=drawTrendSeries(docPts,{color:'var(--ink)',marker:'circle',dash:'4 3'},y(0),false);
     series.forEach((r,i)=>{
       if(i%labelEvery===0||i===series.length-1){
-        out+=`<text x="${x(i).toFixed(1)}" y="${H-11}" text-anchor="middle" fill="var(--muted)" font-size="10.5">${r.year}</text>`;
+        out+=`<text x="${x(i).toFixed(1)}" y="${H-11}" text-anchor="middle" fill="var(--muted)" font-size="12">${r.year}${r.year===2026?'*':''}</text>`;
       }
     });
-    if(!markerPts.length)out+=`<text x="${p.left+p.w/2}" y="${p.top+p.h/2}" text-anchor="middle" fill="var(--muted)" font-size="13">Chưa có dữ liệu trích dẫn cho khoảng năm đã chọn.</text>`;
+    if(!edgePts.length&&!docPts.length)out+=`<text x="${p.left+p.w/2}" y="${p.top+p.h/2}" text-anchor="middle" fill="var(--muted)" font-size="13">Chưa có dữ liệu trích dẫn cho khoảng năm đã chọn.</text>`;
     citSvg.innerHTML=out;
     citSvg.onpointermove=e=>{
       const rect=citSvg.getBoundingClientRect(),px=((e.clientX-rect.left)/rect.width)*W;
-      const idx=Math.max(0,Math.min(series.length-1,Math.round(((px-p.left)/Math.max(1,p.w))*(series.length-1))));
-      const r=series[idx];
+      const yr=a===b?a:Math.round(a+Math.max(0,Math.min(1,(px-p.left)/p.w))*(b-a));
+      const r=series.find(r=>r.year===yr);
       if(r){
         $('#j-cit-summary').innerHTML=j.scopusCitedBy
           ?`<strong>Năm ${r.year}${r.year===2026?' (chưa đầy đủ)':''}:</strong> ${Number.isFinite(r.citingDocs)?`<strong>${integer.format(r.citingDocs)} tài liệu trích dẫn</strong> (Scopus).`:'Chưa có dữ liệu Scopus.'}`
@@ -1652,9 +1630,10 @@ function renderDetailCharts(j){
       :(j.localCitation?.selfCalculatedSeries||[]).filter(r=>r.year>=a&&r.year<=b).map(r=>({year:r.year,score:r.score??r.value,num:r.numerator,den:r.denominator,isTracker:r.year===2026})).filter(r=>Number.isFinite(r.score));
     const maxS=Math.max(1,...csRows.map(r=>r.score));
     const scale=niceScale(maxS);
-    const W=860,H=250,p={left:52,right:32,top:24,bottom:36};
+    const W=Math.max(700,Math.round(csSvg.getBoundingClientRect().width)),H=260,p={left:56,right:24,top:28,bottom:36};
+    csSvg.setAttribute('viewBox',`0 0 ${W} ${H}`);
     p.w=W-p.left-p.right;p.h=H-p.top-p.bottom;
-    const x=i=>csRows.length===1?p.left+p.w/2:p.left+i*(p.w/(csRows.length-1));
+    const x=yr=>a===b?p.left+p.w/2:p.left+(yr-a)*p.w/(b-a);
     const y=v=>p.top+p.h-(v/scale.max)*p.h;
 
     let out='';
@@ -1662,24 +1641,24 @@ function renderDetailCharts(j){
       const py=y(tick);if(py<p.top-1)break;
       out+=`<line x1="${p.left}" y1="${py.toFixed(1)}" x2="${p.left+p.w}" y2="${py.toFixed(1)}" stroke="var(--line)"/><text x="${p.left-8}" y="${(py+4).toFixed(1)}" text-anchor="end" fill="var(--muted)" font-size="11">${decimal.format(tick)}</text>`;
     }
-    if(csRows.length>1){
-      const poly=csRows.map((r,i)=>`${x(i).toFixed(1)},${y(r.score).toFixed(1)}`).join(' ');
-      out+=`<polyline points="${poly}" fill="none" stroke="${color}" stroke-width="2.6"/>`;
+    const points=csRows.map(r=>({yr:r.year,px:x(r.year),py:y(r.score),isProvisional:r.isTracker}));
+    out+=drawTrendSeries(points,{color,marker:'circle',dash:''},y(0));
+    const last=csRows.at(-1);
+    if(last)out+=`<text x="${(x(last.year)-8).toFixed(1)}" y="${(y(last.score)-10).toFixed(1)}" text-anchor="end" fill="var(--ink-strong)" font-size="12" font-weight="600">${j.group==='VAST-1'?oneDec.format(last.score):twoDec.format(last.score)}</text>`;
+    else out+=`<text x="${p.left+p.w/2}" y="${p.top+p.h/2}" text-anchor="middle" fill="var(--muted)" font-size="13">Chưa có CiteScore trong khoảng năm đã chọn.</text>`;
+    for(let yr=a;yr<=b;yr++){
+      out+=`<text x="${x(yr).toFixed(1)}" y="${H-11}" text-anchor="middle" fill="var(--muted)" font-size="12">${yr}${yr===2026?'*':''}</text>`;
     }
-    csRows.forEach((r,i)=>{
-      const px=x(i),py=y(r.score);
-      out+=`<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="4.2" fill="${r.isTracker?'var(--bg)':color}" stroke="${color}" stroke-width="2"/>`;
-      out+=`<text x="${px.toFixed(1)}" y="${(py-8).toFixed(1)}" text-anchor="middle" fill="var(--ink-strong)" font-size="11" font-weight="600">${j.group==='VAST-1'?oneDec.format(r.score):twoDec.format(r.score)}</text>`;
-      out+=`<text x="${px.toFixed(1)}" y="${H-11}" text-anchor="middle" fill="var(--muted)" font-size="11">${r.year}${r.isTracker?'*':''}</text>`;
-    });
     csSvg.innerHTML=out;
     csSvg.onpointermove=e=>{
       if(!csRows.length)return;
       const rect=csSvg.getBoundingClientRect(),px=((e.clientX-rect.left)/rect.width)*W;
-      const idx=Math.max(0,Math.min(csRows.length-1,Math.round(((px-p.left)/Math.max(1,p.w))*(csRows.length-1))));
-      const r=csRows[idx];
+      const yr=a===b?a:Math.round(a+Math.max(0,Math.min(1,(px-p.left)/p.w))*(b-a));
+      const r=csRows.find(r=>r.year===yr);
       if(r){
         $('#j-cs-summary').innerHTML=`<strong>Năm ${r.year}${r.isTracker?(j.group==='VAST-1'?' (Tracker)':' (tự tính, YTD)'):''}:</strong> CiteScore = <strong>${j.group==='VAST-1'?oneDec.format(r.score):twoDec.format(r.score)}</strong> (${integer.format(r.num||0)} trích dẫn / ${integer.format(r.den||0)} tài liệu).`;
+      }else{
+        $('#j-cs-summary').textContent=`Năm ${yr}: Chưa có CiteScore.`;
       }
     };
   }
@@ -1759,7 +1738,6 @@ function wireEvents(){
   $('#close-tooltip').addEventListener('click',()=>{state.pinnedYear=null;state.activeYear=null;hideTooltip();});
 
   $('#toggle-cip-benchmark').addEventListener('change',e=>{state.showCipBenchmark=e.target.checked;renderCandidatesSection();});
-  $('#close-candidates-tooltip').addEventListener('click',()=>{$('#candidates-tooltip').hidden=true;$('#candidates-hover-line').hidden=true;});
 
   $('#citation-mode').addEventListener('change',e=>{
     state.citationMode=e.target.value;
@@ -1771,12 +1749,23 @@ function wireEvents(){
     state.selectedCitations=new Set(citationJournals().map(j=>j.id));
     renderCitationsSection();
   });
-  $('#close-citations-tooltip').addEventListener('click',()=>{$('#citations-tooltip').hidden=true;$('#citations-hover-line').hidden=true;});
 
   $('#papers-group').addEventListener('change',e=>{state.papersGroup=e.target.value;renderPapersSection();});
   $('#papers-focus-year').addEventListener('change',e=>{state.papersFocusYear=Number(e.target.value);renderPapersSection();});
 
+  let chartResizeFrame=0;
+  window.addEventListener('resize',()=>{
+    cancelAnimationFrame(chartResizeFrame);
+    chartResizeFrame=requestAnimationFrame(renderVisibleCharts);
+  });
+
   document.addEventListener('click',e=>{
+    const chartStyle=e.target.closest('[data-trend-style]');
+    if(chartStyle){
+      state.trendStyle=chartStyle.dataset.trendStyle;
+      renderVisibleCharts();
+      return;
+    }
     const link=e.target.closest('a[href^="#journal/"]');
     if(!link||e.defaultPrevented||e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;
     // The browser cannot resolve a journal route as an element ID, and an
@@ -1838,7 +1827,7 @@ async function bootUnlockedDashboard(payload){
 
 async function start(){
   try{
-    const dRes=await fetch('data/dashboard.json?v=20261025a');
+    const dRes=await fetch('data/dashboard.json?v=20261104a');
     if(!dRes.ok)throw new Error('HTTP status error');
     const envelope=await dRes.json();
     const tryToken=async(token,showErr=false)=>{
