@@ -544,7 +544,7 @@ function renderHeroAndOverview(){
 
   const cells=[
     ['Hệ thống tạp chí VAST',`${dashboard.journals.length} tạp chí`,`${international.length} tạp chí VAST-1 (Scopus; ${international.filter(j=>j.jcr).length} tạp chí có JCR/ESCI) · ${national.length} tạp chí VAST-2`],
-    ['Tổng số bài xuất bản (2015–2026*)',`${integer.format(totalPeriodPapers)} bài`,`${integer.format(totalPeriodIssues)} kỳ xuất bản (VJST từ 2016 · chốt 21/10/2026)`],
+    ['Tổng số bài xuất bản (2015–2026*)',`${integer.format(totalPeriodPapers)} bài`,`${integer.format(totalPeriodIssues)} kỳ xuất bản (VJST từ 2016 · chốt ${formatDate(dashboard.collectedAt)})`],
     ['Tài liệu trích dẫn tích lũy (Scopus)',`${integer.format(totalCitingDocs)} tài liệu`,`Toàn thời gian từ ${integer.format(totalSourceDocs)} bài nguồn · ${international.length} tạp chí VAST-1 (${formatDate(dashboard.scopusCitedBy.collectedAt)}); ngoài kỳ thống kê: ${integer.format(preStartDocs)} tài liệu trước mốc bắt đầu, ${integer.format(postEndDocs)} ghi năm xuất bản sau ${scopus.trackerYear}`],
     ['Đỉnh CiteScore & JIF',`CS ${csLeaders.length?oneDec.format(csLeaders[0].value):'N/A'} · JIF ${jifLeaders.length?oneDec.format(jifLeaders[0].value):'N/A'}`,`CiteScore ${annualYear}: ${csLeaders.map(r=>`${r.code} ${oneDec.format(r.value)}`).join(' · ')} | JCR ${dashboard.jcr.dataYear}: ${jifLeaders.map(r=>`${r.code} ${oneDec.format(r.value)}`).join(' · ')}`]
   ];
@@ -981,9 +981,12 @@ function renderCandidatesSection(){
   });
 
   if(state.showCipBenchmark){
-    const py70=y(0.7);
-    if(py70>=plot.top&&py70<=plot.top+plot.height){
-      out+=`<line x1="${plot.left}" y1="${py70.toFixed(1)}" x2="${plot.left+plot.width}" y2="${py70.toFixed(1)}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5 4"/><text x="${plot.left+8}" y="${(py70-6).toFixed(1)}" fill="var(--accent-ink)" font-size="10.5" font-weight="600">Mốc CIP Tracker 2026 (0,70 · 97/130)</text>`;
+    const cipT=scopus.records.find(r=>r.journal==='CIP'&&r.type==='tracker');
+    const cipVal=Number.isFinite(cipT?.value)?cipT.value:0.8;
+    const pyCip=y(cipVal);
+    if(pyCip>=plot.top&&pyCip<=plot.top+plot.height){
+      const cipDetail=Number.isFinite(cipT?.citations)&&Number.isFinite(cipT?.documents)?` · ${integer.format(cipT.citations)}/${integer.format(cipT.documents)}`:'';
+      out+=`<line x1="${plot.left}" y1="${pyCip.toFixed(1)}" x2="${plot.left+plot.width}" y2="${pyCip.toFixed(1)}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5 4"/><text x="${plot.left+8}" y="${(pyCip-6).toFixed(1)}" fill="var(--accent-ink)" font-size="10.5" font-weight="600">Mốc CIP Tracker 2026 (${twoDec.format(cipVal)}${cipDetail})</text>`;
     }
   }
 
@@ -1347,7 +1350,7 @@ function renderDetail(id){
     const bestT26=bestCatT26?.tracker2026||null;
     metricCards=[
       ['CiteScore 2025 (Scopus)',a25&&Number.isFinite(a25.value)?`${oneDec.format(a25.value)}${bestS25?` (${bestS25.quartile||scopusQuartile(bestS25.percentile)})`:''}`:'N/A',a25&&Number.isFinite(a25.citations)?`${integer.format(a25.citations)} trích dẫn / ${integer.format(a25.documents)} tài liệu (2022–2025)${bestCat25?` · Ngành: ${bestCat25.name} — phân vị ${bestS25.percentile}% (${bestS25.rank}/${bestS25.total})${cats.length>1?` (+${cats.length-1} ngành)`:''}`:''}`:'Chưa có CiteScore chính thức'],
-      ['CiteScore Tracker 2026',t26&&Number.isFinite(t26.value)?`${oneDec.format(t26.value)}${bestT26?` (${bestT26.quartile||scopusQuartile(bestT26.percentile)})`:''}`:'N/A',t26&&Number.isFinite(t26.citations)?`${integer.format(t26.citations)} trích dẫn / ${integer.format(t26.documents)} tài liệu${bestT26?` · Ngành: ${bestCatT26.name} — phân vị ${bestT26.percentile}% (${bestT26.rank}/${bestT26.total})`:' (cập nhật 05/10/2026)'}`:'Cập nhật 05/10/2026'],
+      ['CiteScore Tracker 2026',t26&&Number.isFinite(t26.value)?`${oneDec.format(t26.value)}${bestT26?` (${bestT26.quartile||scopusQuartile(bestT26.percentile)})`:''}`:'N/A',t26&&Number.isFinite(t26.citations)?`${integer.format(t26.citations)} trích dẫn / ${integer.format(t26.documents)} tài liệu${bestT26?` · Ngành: ${bestCatT26.name} — phân vị ${bestT26.percentile}% (${bestT26.rank}/${bestT26.total})`:` (cập nhật ${formatDate(dashboard.officialScopus.trackerSourceUpdatedAt)})`}`:`Cập nhật ${formatDate(dashboard.officialScopus.trackerSourceUpdatedAt)}`],
       jr
         ?['JIF 2025 (WoS JCR)',`${oneDec.format(jr.jif)} (${jr.categories[0].jif.quartile})`,`${integer.format(jr.jifNumerator)} trích dẫn / ${integer.format(jr.jifDenominator)} bài (2023–2024) · Ngành: ${jr.categories[0].name} (hạng ${jr.categories[0].jif.rank}/${jr.categories[0].jif.total})${jr.categories.length>1?` (+${jr.categories.length-1} ngành)`:''} · JCI: ${twoDec.format(jr.jci)}`]
         :[`Tổng số bài (${minYear}–${maxYear})`,`${integer.format(totalHistPapers)} bài`,`${integer.format(totalHistIssues)} kỳ xuất bản`],
